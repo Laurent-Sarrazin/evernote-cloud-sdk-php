@@ -7,6 +7,10 @@ use EDAM\Error\EDAMUserException;
 use EDAM\NoteStore\NoteFilter;
 use EDAM\NoteStore\NotesMetadataResultSpec;
 use EDAM\Types\LinkedNotebook;
+use Evernote\Exception\ExceptionFactory;
+use Evernote\Exception\NotFoundNotebookException;
+use Evernote\Exception\NotFoundNoteException;
+use Evernote\Exception\PermissionDeniedException;
 use Evernote\Model\Note;
 use Evernote\Model\Notebook;
 use ohmy\Auth1;
@@ -41,6 +45,35 @@ class Client
 
     const LINKED_SCOPE   = 2;
 
+    /* Search scopes */
+
+    /**
+     *  Only used if specifying an explicit notebook instead.
+     */
+    const SEARCH_SCOPE_NONE            = 0;
+
+    /**
+     *  Search among all personal notebooks.
+     */
+    const SEARCH_SCOPE_PERSONAL        = 1;
+
+    /**
+     *  Search among all notebooks shared to the user by others.
+     */
+    const SEARCH_SCOPE_PERSONAL_LINKED = 2;
+
+    /**
+     *  Search among all business notebooks the user has joined.
+     */
+    const SEARCH_SCOPE_BUSINESS        = 3;
+
+    /**
+     *  Use this if your app uses an "App Notebook". (any other set flags will be ignored.)
+     */
+    const SEARCH_SCOPE_APPNOTEBOOK     = 4;
+
+    /*****************/
+
     public function __construct($token = null, $sandbox = true, $advancedClient = null)
     {
         $this->token   = $token;
@@ -56,8 +89,12 @@ class Client
     public function getUser()
     {
         if (null === $this->user) {
-            $this->user = $this->getAdvancedClient()
-                ->getUserStore()->getUser($this->token);
+            try {
+                $this->user = $this->getAdvancedClient()
+                    ->getUserStore()->getUser($this->token);
+            } catch (\Exception $e) {
+                throw ExceptionFactory::create($e);
+            }
         }
 
         return $this->user;
@@ -71,8 +108,12 @@ class Client
     public function getBusinessAuth()
     {
         if (null === $this->businessAuth) {
-            $this->businessAuth =
-                $this->getAdvancedClient()->getUserStore()->authenticateToBusiness($this->token);
+            try {
+                $this->businessAuth =
+                    $this->getAdvancedClient()->getUserStore()->authenticateToBusiness($this->token);
+            } catch (\Exception $e) {
+                throw ExceptionFactory::create($e);
+            }
         }
 
         return $this->businessAuth;
@@ -89,7 +130,11 @@ class Client
     
     public function getBusinessNoteStore()
     {
-        if (null === $this->businessNoteStore && $this->isBusinessUser()) {
+        if (false === $this->isBusinessUser()) {
+            throw new PermissionDeniedException('Business');
+        }
+
+        if (null === $this->businessNoteStore) {
             $this->businessNoteStore =
                 $this->getNoteStore($this->getBusinessAuth()->noteStoreUrl);
         }
@@ -99,12 +144,21 @@ class Client
 
     public function getBusinessSharedNotebooks()
     {
-        return $this->getBusinessNoteStore()->listSharedNotebooks($this->getBusinessToken());
+        try {
+            return $this->getBusinessNoteStore()->listSharedNotebooks($this->getBusinessToken());
+        } catch (\Exception $e) {
+            throw ExceptionFactory::create($e);
+        }
+
     }
 
     public function getBusinessLinkedNotebooks()
     {
-        return $this->getBusinessNoteStore()->listNotebooks($this->getBusinessToken());
+        try {
+            return $this->getBusinessNoteStore()->listNotebooks($this->getBusinessToken());
+        } catch (\Exception $e) {
+            throw ExceptionFactory::create($e);
+        }
     }
 
     public function listNotebooks()
@@ -188,16 +242,15 @@ class Client
                         if (null === $linkedNotebook->shareKey) {
                             continue;
                         }
-                        $resultNotebooks[] = $this->getNoteBookByLinkedNotebook($linkedNotebook);
+                        $resultNotebooks[] = $this->getNotebookByLinkedNotebook($linkedNotebook);
                     }
                 }
 
             } else {
                 foreach ($linkedNotebooks as $linkedNotebook) {
                     try {
-                        $resultNotebooks[] = $this->getNoteBookByLinkedNotebook($linkedNotebook);
+                        $resultNotebooks[] = $this->getNotebookByLinkedNotebook($linkedNotebook);
                     } catch (\Exception $e) {
-                        echo "\nNope";
                     }
                 };
             }
@@ -209,14 +262,27 @@ class Client
     protected function getSharedNotebookAuthResult(LinkedNotebook $linkedNotebook)
     {
         $sharedNoteStore = $this->getNotestore($linkedNotebook->noteStoreUrl);
-        return $sharedNoteStore->authenticateToSharedNotebook($linkedNotebook->shareKey, $this->token);
+
+        if (null === $linkedNotebook->shareKey) {
+            throw new PermissionDeniedException('shareKey');
+        }
+
+        try {
+            return $sharedNoteStore->authenticateToSharedNotebook($linkedNotebook->shareKey, $this->token);
+        } catch (\Exception $e) {
+            throw ExceptionFactory::create($e);
+        }
     }
 
-    protected function getNoteBookByLinkedNotebook(LinkedNotebook $linkedNotebook)
+    protected function getNotebookByLinkedNotebook(LinkedNotebook $linkedNotebook)
     {
         $sharedNoteStore = $this->getNotestore($linkedNotebook->noteStoreUrl);
         $authToken = $this->getSharedNotebookAuthResult($linkedNotebook)->authenticationToken;
-        $sharedNotebook = $sharedNoteStore->getSharedNotebookByAuth($authToken);
+        try {
+            $sharedNotebook = $sharedNoteStore->getSharedNotebookByAuth($authToken);
+        } catch (\Exception $e) {
+            throw ExceptionFactory::create($e);
+        }
 
         $notebook = new Notebook(null, $linkedNotebook, $sharedNotebook);
 
@@ -228,30 +294,43 @@ class Client
     
     public function listPersonalNotebooks()
     {
-        $notebooks = $this->getUserNotestore()->listNotebooks($this->token);
-
-        return $notebooks;
+        try {
+            return $this->getUserNotestore()->listNotebooks($this->token);
+        } catch (\Exception $e) {
+            throw ExceptionFactory::create($e);
+        }
     }
 
     public function listSharedNotebooks()
     {
-        return $this->getUserNotestore()->listSharedNotebooks($this->token);
+        try {
+            return $this->getUserNotestore()->listSharedNotebooks($this->token);
+        } catch (\Exception $e) {
+            throw ExceptionFactory::create($e);
+        }
+
     }
 
     public function listLinkedNotebooks()
     {
-
-        return $this->getUserNotestore()->listLinkedNotebooks($this->token);
+        try {
+            return $this->getUserNotestore()->listLinkedNotebooks($this->token);
+        } catch (\Exception $e) {
+            throw ExceptionFactory::create($e);
+        }
     }
 
     protected function getUserNotestore()
     {
         if (null === $this->userNoteStore) {
-            $noteStoreUrl =
-                $this->getAdvancedClient()
-                    ->getUserStore()
-                    ->getNoteStoreUrl($this->token);
-
+            try {
+                $noteStoreUrl =
+                    $this->getAdvancedClient()
+                        ->getUserStore()
+                        ->getNoteStoreUrl($this->token);
+            } catch (\Exception $e) {
+                throw ExceptionFactory::create($e);
+            }
             $this->userNoteStore = $this->getNoteStore($noteStoreUrl);
         }
 
@@ -320,7 +399,11 @@ class Client
         $edamNote->attributes = $note->attributes;
         $edamNote->resources  = $note->resources;
 
-        $uploaded_note = $noteToReplace->noteStore->updateNote($noteToReplace->authToken, $edamNote);
+        try {
+            $uploaded_note = $noteToReplace->noteStore->updateNote($noteToReplace->authToken, $edamNote);
+        } catch (\Exception $e) {
+            throw ExceptionFactory::create($e);
+        }
 
         $uploaded_note->content = $note->content;
 
@@ -359,7 +442,7 @@ class Client
         } catch (EDAMNotFoundException $e) {
             $notebook = $this->getNotebook($notebook->guid, self::LINKED_SCOPE);
             if (null === $notebook) {
-                throw $e;
+                throw ExceptionFactory::create($e);
             }
 
             if ($notebook->isLinkedNotebook()) {
@@ -368,6 +451,9 @@ class Client
 
                 $uploaded_note = $noteStore->createNote($token, $edamNote);
             }
+        }
+        catch (\Exception $e) {
+            throw ExceptionFactory::create($e);
         }
 
         $uploaded_note->content = $note->content;
@@ -381,14 +467,13 @@ class Client
 
     public function deleteNote(Note $note)
     {
-        if (null === $note->guid) {
-
-            return false;
-        }
-
         // we have the credentials
         if (null !== $note->noteStore && null !== $note->authToken) {
-            $note->noteStore->deleteNote($note->authToken, $note->guid);
+            try {
+                $note->noteStore->deleteNote($note->authToken, $note->guid);
+            } catch (\Exception $e) {
+                throw ExceptionFactory::create($e);
+            }
 
             return true;
         }
@@ -407,19 +492,20 @@ class Client
             }
 
             return false;
+        } catch (\Exception $e) {
+            throw ExceptionFactory::create($e);
         }
     }
 
     public function shareNote(Note $note)
     {
-        if (null === $note->guid) {
-
-            return null;
-        }
-
         // we have the credentials
         if (null !== $note->noteStore && null !== $note->authToken) {
-            $shareKey = $note->noteStore->shareNote($note->authToken, $note->guid);
+            try {
+                $shareKey = $note->noteStore->shareNote($note->authToken, $note->guid);
+            } catch (\Exception $e) {
+                throw ExceptionFactory::create($e);
+            }
             $shardId  = $this->getShardIdFromToken($note->authToken);
 
             return $this->getShareUrl($note->guid, $shardId, $shareKey, $this->getAdvancedClient()->getEndpoint());
@@ -427,7 +513,7 @@ class Client
 
         try {
             // We don't have credentials so we assume it's a personal note
-            return $this->getUserNotestore()->deleteNote($this->token, $note->guid);
+            return $this->getUserNotestore()->shareNote($this->token, $note->guid);
 
         } catch (EDAMNotFoundException $e) {
             // The note's not in a personal notebook. We'll need to find it
@@ -441,6 +527,8 @@ class Client
             }
 
             return null;
+        } catch (\Exception $e) {
+            throw ExceptionFactory::create($e);
         }
     }
 
@@ -451,10 +539,12 @@ class Client
                 $edam_note = $this->getUserNotestore()->getNote($this->token, $guid, true, true, false, false);
 
                 return $this->getNoteInstance($edam_note, $this->getUserNotestore(), $this->token);
-            } catch (EDAMNotFoundException $e) {
+            } catch (NotFoundNoteException $e) {
                 if (self::PERSONAL_SCOPE === $scope) {
                     return null;
                 }
+            } catch (\Exception $e) {
+                throw ExceptionFactory::create($e);
             }
         }
 
@@ -470,12 +560,14 @@ class Client
 
                     return $this->getNoteInstance($edam_note, $sharedNoteStore, $authToken);
 
-                } catch (EDAMUserException $e) {
+                } catch (PermissionDeniedException $e) {
                     // No right on this notebook.
                     continue;
-                } catch (EDAMNotFoundException $e) {
+                } catch (NotFoundNoteException $e) {
                     // Note not found
                     continue;
+                } catch (\Exception $e) {
+                    throw ExceptionFactory::create($e);
                 }
 
             }
@@ -502,10 +594,12 @@ class Client
                 $edamNotebook = $this->getUserNotestore()->getNotebook($this->token, $notebook_guid);
 
                 return new Notebook($edamNotebook);
-            } catch (EDAMNotFoundException $e) {
+            } catch (NotFoundNotebookException $e) {
                 if (self::PERSONAL_SCOPE === $scope) {
                     return null;
                 }
+            } catch (\Exeption $e) {
+                throw ExceptionFactory::create($e);
             }
         }
 
@@ -514,8 +608,8 @@ class Client
 
             foreach ($linkedNotebooks as $linkedNotebook) {
                 try {
-                    $sharedNotebook = $this->getNoteBookByLinkedNotebook($linkedNotebook);
-                } catch (EDAMUserException $e) {
+                    $sharedNotebook = $this->getNotebookByLinkedNotebook($linkedNotebook);
+                } catch (PermissionDeniedException $e) {
                     // No right on this notebook.
                     continue;
                 }
@@ -554,5 +648,4 @@ class Client
 
         return null;
     }
-
 }
